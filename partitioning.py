@@ -328,7 +328,10 @@ if len(sys.argv) < 2:
     sys.exit(1)
 
 graph_file_name = sys.argv[1]
-#random.seed(1)
+if len(sys.argv) >= 4:
+    random.seed(int(sys.argv[3]))
+else:
+    random.seed(1)
 
 graph = Graph.read(graph_file_name)
 graph.check()
@@ -337,13 +340,13 @@ options = Options()
 if len(sys.argv) >= 3:
     options.margin = float(sys.argv[2])
 options.iteration_limit = 10 * graph.nb_nodes()
-options.time_limit = 4000
-options.verbosity=1
+options.time_limit = 60
+#options.verbosity=1
 
-#solver = MultilevelSolver(graph, options)
-#solver.solve()
-builder = ModelBuilder(graph, options)
-builder.build()
-builder.solve()
+solver = MultilevelSolver(graph, options)
+solver.solve()
+#builder = ModelBuilder(graph, options)
+#builder.build()
+#builder.solve(seed)
 
 

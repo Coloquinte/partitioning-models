@@ -83,10 +83,10 @@ class ModelBuilder(object):
         self.ls.get_param().set_verbosity(0)
         self.model.close()
         self.init_placement()
-        if iteration_limit == None:
-            #iteration_limit = 100*len(self.node_weights)
-            iteration_limit = 1000000
-        self.ls.create_phase().iteration_limit = iteration_limit
+        self.ls.get_param().set_nb_threads(1)
+        phase = self.ls.create_phase()
+        if iteration_limit != None:
+            phase.iteration_limit = iteration_limit
         self.ls.get_param().set_seed(seed)
         self.ls.solve()
         self.read_solution()
@@ -160,6 +160,7 @@ class MultilevelSolver(object):
         self.n_parts = 2
         self.margin = 5.0
         self.coarsening_ratio = 3.0
+        self.iterations_per_level = 50 * len(self.node_weights)
         self.solutions = []
         self.solution_values = []
         self.initial_solutions = []
@@ -196,6 +197,11 @@ class MultilevelSolver(object):
         next_level = self.build_recursive()
         next_level.check()
         next_level.run()
+        self.inject_next_level_solutions(next_level)
+        while len(self.initial_solutions) > 0:
+            self.run_once()
+        print ("Post-solve: average cost: " + str(sum(self.solution_values) / len(self.solution_values)) )
+        print ("Solutions: ", self.solution_values)
 
     def sort_solutions(self):
         sols = [a for a in zip(self.solution_values, self.solutions)]
@@ -209,6 +215,8 @@ class MultilevelSolver(object):
         edge2weight = dict()
         for i in range(len(self.edges)):
             coarsened_edge = tuple(set([self.node2merged[p] for p in self.edges[i]]))
+            if len(coarsened_edge) == 1:
+                continue
             edge2weight[coarsened_edge] = edge2weight.get(coarsened_edge, 0) + self.edge_weights[i]
         for edge, weight in edge2weight.items():
             coarsened_edges.append(edge)
@@ -226,16 +234,28 @@ class MultilevelSolver(object):
             coarsened_solutions.append(coarsened)
         next_level = MultilevelSolver(coarsened_edges, coarsened_edge_weights, coarsened_node_weights)
         next_level.initial_solutions = coarsened_solutions
+        next_level.iterations_per_level = self.iterations_per_level
         return next_level
+
+    def inject_next_level_solutions(self, next_level):
+        self.initial_solutions = []
+        self.solutions = []
+        self.solution_values = []
+        for s in next_level.solutions:
+            uncoarsened = [0 for i in range(len(self.node_weights))]
+            for i in range(len(self.node2merged)):
+                uncoarsened[i] = s[self.node2merged[i]]
+            self.initial_solutions.append(uncoarsened)
 
     def run_once(self):
         seed = len(self.solutions)
         builder = ModelBuilder(self.edges, self.edge_weights, self.node_weights)
+        builder.margin = self.margin
         if len(self.initial_solutions) > 0:
             builder.initial_solution = self.initial_solutions.pop(0)
         builder.check()
         builder.build()
-        builder.solve(seed=seed)
+        builder.solve(seed=seed, iteration_limit=self.iterations_per_level)
         self.solutions.append(builder.solution)
         self.solution_values.append(builder.objective_value)
 
@@ -257,20 +277,22 @@ class MultilevelSolver(object):
         self.n_merged = merged_index
 
 if len(sys.argv) < 2:
-    print("Usage: ls_partitioning.py graph.hgr")
+    print("Usage: ls_partitioning.py graph.hgr margin")
     sys.exit(1)
 
 graph_file_name = sys.argv[1]
+margin = 5.0 if len(sys.argv) < 3 else float(sys.argv[2])
 random.seed(1)
 
 edges, edge_weights, node_weights = read_graph(graph_file_name)
 check_graph(edges, edge_weights, node_weights)
 
+#builder = ModelBuilder (edges, edge_weights, node_weights)
+#builder.build()
+#builder.solve()
 solver = MultilevelSolver (edges, edge_weights, node_weights)
+solver.margin = margin
 solver.run()
-
-#for i in range(10):
-#    builder = ModelBuilder(edges, edge_weights, node_weights)
-#    builder.build()
-#    builder.solve(seed=i)
+solver.run()
+solver.run()
 
