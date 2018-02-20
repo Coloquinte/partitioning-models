@@ -96,6 +96,8 @@ class ModelBuilder(object):
         # Decisions
         self.node_placement = None
         # Debug
+        self.edge_counters = []
+        self.edge_degrees = []
         self.edge_costs = []
 
     def check(self):
@@ -143,17 +145,15 @@ class ModelBuilder(object):
         return self.model.get_objective(0).value
 
     def build_cost(self):
+        self.build_edge_counters()
         if self.options.replication:
-            if self.options.cost == "cut":
-                self.build_cut_cost_with_replication()
-                #self.build_cut_cost()
-            else:
-                self.build_degree_cost_with_replication()
+            self.build_edge_degrees_with_replication()
         else:
-            if self.options.cost == "cut":
-                self.build_cut_cost()
-            else:
-                self.build_degree_cost()
+            self.build_edge_degrees()
+        if self.options.cost == "cut":
+            self.build_cut_cost()
+        else:
+            self.build_degree_cost()
 
     def build_node_variables(self):
         self.node_placement = []
@@ -192,31 +192,6 @@ class ModelBuilder(object):
             weights_on_part.append(decision * weight)
         self.model.add_constraint(self.model.sum(weights_on_part) < self.weight_per_part)
 
-    def build_edge_degree(self, e):
-        pins = self.graph.edges[e]
-        counters = []
-        for j in range(self.options.nb_parts):
-            counters.append(self.model.sum([self.node_placement[p][j] for p in pins]))
-        occupied = [c != 0 for c in counters]
-        return self.model.sum(occupied)
-
-    def build_edge_degree_without_source(self, e):
-        """Cost function helper for node replication"""
-        pins = self.graph.edges[e]
-        if len(pins) <= 1:
-            return 0
-        sink_pins = pins[1:]
-        source_pin = pins[0]
-        counters = []
-        for j in range(self.options.nb_parts):
-            counters.append(self.model.sum([self.node_placement[p][j] for p in sink_pins]))
-        source_present = []
-        for j in range(self.options.nb_parts):
-            source_present.append(self.node_placement[source_pin][j])
-        m = self.model
-        no_source = [m.and_(c !=  0, m.not_(s)) for c, s in zip(counters, source_present)]
-        return self.model.sum(no_source)
-
     def apply_coarsening(self):
         for merged_group in self.coarsening:
             if len(merged_group) <= 1:
@@ -226,25 +201,47 @@ class ModelBuilder(object):
                 for a, b in zip(self.node_placement[n1], self.node_placement[n2]):
                     self.model.add_constraint(a == b)
 
+    def build_edge_counters(self):
+        self.edge_counters = []
+        for pins in self.graph.edges:
+            counters = []
+            for j in range(self.options.nb_parts):
+                counters.append(self.model.sum([self.node_placement[p][j] for p in pins]))
+            self.edge_counters.append(counters)
+
+    def build_edge_degrees(self):
+        self.edge_degrees = []
+        for pins in self.graph.edges:
+            counters = []
+            for j in range(self.options.nb_parts):
+                counters.append(self.model.sum([self.node_placement[p][j] for p in pins]))
+            occupied = [c != 0 for c in counters]
+            self.edge_degrees.append(self.model.sum(occupied) - 1)
+
+    def build_edge_degrees_with_replication(self):
+        self.edge_degrees = []
+        m = self.model
+        for pins in self.graph.edges:
+            if len(pins) <= 1:
+                self.edge_degrees.append(m.create_constant(0))
+                continue
+            source_pin = pins[0]
+            counters = []
+            for j in range(self.options.nb_parts):
+                counters.append(self.model.sum([self.node_placement[p][j] for p in pins]))
+            source_present = self.node_placement[source_pin]
+            no_source = [(c * m.not_(s)) != 0 for c, s in zip(counters, source_present)]
+            self.edge_degrees.append(self.model.sum(no_source))
+
     def build_cut_cost(self):
-        self.edge_costs = [self.graph.edge_weights[i] * (self.build_edge_degree(i) >= 2) for i in range(self.graph.nb_edges())]
-        cut = self.model.sum(self.costs)
+        self.edge_costs = [self.graph.edge_weights[i] * (self.edge_degrees[i] >= 1) for i in range(self.graph.nb_edges())]
+        cut = self.model.sum(self.edge_costs)
         self.model.minimize(cut)
 
     def build_degree_cost(self):
-        self.edge_costs = [self.graph.edge_weights[i] * self.build_edge_degree(i) for i in range(self.graph.nb_edges())]
-        sum_degrees = self.model.sum(self.edge_costs) - sum(self.graph.edge_weights)
+        self.edge_costs = [self.graph.edge_weights[i] * self.edge_degrees[i] for i in range(self.graph.nb_edges())]
+        sum_degrees = self.model.sum(self.edge_costs)
         self.model.minimize(sum_degrees)
-
-    def build_cut_cost_with_replication(self):
-        self.edge_costs = [self.graph.edge_weights[i] * (self.build_edge_degree_without_source(i) >= 1) for i in range(self.graph.nb_edges())]
-        cut = self.model.sum(self.edge_costs)
-        self.model.minimize(cut)
-
-    def build_degree_cost_with_replication(self):
-        self.edge_costs = [self.graph.edge_weights[i] * self.build_edge_degree_without_source(i) for i in range(self.graph.nb_edges())]
-        cut = self.model.sum(self.edge_costs)
-        self.model.minimize(cut)
 
 
 class MultilevelSolver(object):
