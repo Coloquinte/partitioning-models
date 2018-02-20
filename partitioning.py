@@ -95,6 +95,8 @@ class ModelBuilder(object):
         self.coarsening = []
         # Decisions
         self.node_placement = None
+        # Debug
+        self.edge_costs = []
 
     def check(self):
         self.graph.check()
@@ -118,10 +120,7 @@ class ModelBuilder(object):
         self.check()
         self.build_node_variables()
         self.build_node_constraints()
-        if self.options.cost == "cut":
-            self.build_cut_cost()
-        else:
-            self.build_degree_cost()
+        self.build_cost()
         self.apply_coarsening()
         # Close and apply parameters
         self.ls.get_param().set_verbosity(self.options.verbosity)
@@ -142,6 +141,19 @@ class ModelBuilder(object):
 
     def objective_value(self):
         return self.model.get_objective(0).value
+
+    def build_cost(self):
+        if self.options.replication:
+            if self.options.cost == "cut":
+                self.build_cut_cost_with_replication()
+                #self.build_cut_cost()
+            else:
+                self.build_degree_cost_with_replication()
+        else:
+            if self.options.cost == "cut":
+                self.build_cut_cost()
+            else:
+                self.build_degree_cost()
 
     def build_node_variables(self):
         self.node_placement = []
@@ -188,6 +200,23 @@ class ModelBuilder(object):
         occupied = [c != 0 for c in counters]
         return self.model.sum(occupied)
 
+    def build_edge_degree_without_source(self, e):
+        """Cost function helper for node replication"""
+        pins = self.graph.edges[e]
+        if len(pins) <= 1:
+            return 0
+        sink_pins = pins[1:]
+        source_pin = pins[0]
+        counters = []
+        for j in range(self.options.nb_parts):
+            counters.append(self.model.sum([self.node_placement[p][j] for p in sink_pins]))
+        source_present = []
+        for j in range(self.options.nb_parts):
+            source_present.append(self.node_placement[source_pin][j])
+        m = self.model
+        no_source = [m.and_(c !=  0, m.not_(s)) for c, s in zip(counters, source_present)]
+        return self.model.sum(no_source)
+
     def apply_coarsening(self):
         for merged_group in self.coarsening:
             if len(merged_group) <= 1:
@@ -198,20 +227,24 @@ class ModelBuilder(object):
                     self.model.add_constraint(a == b)
 
     def build_cut_cost(self):
-        edge_costs = [self.graph.edge_weights[i] * (self.build_edge_degree(i) >= 2) for i in range(self.graph.nb_edges())]
-        cut = self.model.sum(edge_costs)
+        self.edge_costs = [self.graph.edge_weights[i] * (self.build_edge_degree(i) >= 2) for i in range(self.graph.nb_edges())]
+        cut = self.model.sum(self.costs)
         self.model.minimize(cut)
 
     def build_degree_cost(self):
-        edge_costs = [self.graph.edge_weights[i] * self.build_edge_degree(i) for i in range(self.graph.nb_edges())]
-        sum_degrees = self.model.sum(edge_costs) - sum(self.graph.edge_weights)
+        self.edge_costs = [self.graph.edge_weights[i] * self.build_edge_degree(i) for i in range(self.graph.nb_edges())]
+        sum_degrees = self.model.sum(self.edge_costs) - sum(self.graph.edge_weights)
         self.model.minimize(sum_degrees)
 
     def build_cut_cost_with_replication(self):
-        return
+        self.edge_costs = [self.graph.edge_weights[i] * (self.build_edge_degree_without_source(i) >= 1) for i in range(self.graph.nb_edges())]
+        cut = self.model.sum(self.edge_costs)
+        self.model.minimize(cut)
 
     def build_degree_cost_with_replication(self):
-        return
+        self.edge_costs = [self.graph.edge_weights[i] * self.build_edge_degree_without_source(i) for i in range(self.graph.nb_edges())]
+        cut = self.model.sum(self.edge_costs)
+        self.model.minimize(cut)
 
 
 class MultilevelSolver(object):
@@ -339,8 +372,9 @@ graph.check()
 options = Options()
 if len(sys.argv) >= 3:
     options.margin = float(sys.argv[2])
-options.iteration_limit = 10 * graph.nb_nodes()
-options.time_limit = 60
+options.iteration_limit = 50 * graph.nb_nodes()
+options.time_limit = 10
+options.replication = True
 #options.verbosity=1
 
 solver = MultilevelSolver(graph, options)
